@@ -11,7 +11,7 @@ Projekt w R Markdown bada zależności między różnymi czynnikami a wynikami u
 
 ## Podgląd raportu HTML
 
-[Kliknij tutaj, aby zobaczyć raport HTML](https://Katarzyna-Taras.github.io/Projekt-SAD-Czynniki_wpl_na_wyniki_uczniow/czynniki_v1.html)
+[Kliknij tutaj, aby zobaczyć raport HTML][https://github.com/Katarzyna-Taras/Projekt-SAD-Czynniki_wpl_na_wyniki_uczniow/blob/main/czynniki_v1.html]
 
 > Uwaga: plik HTML ma duży rozmiar (~2,25 MB), więc GitHub może go nie wyświetlić bezpośrednio w podglądzie.
 
