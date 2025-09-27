@@ -1,0 +1,545 @@
+---
+title: "Analiza czynników wpływających na wyniki uczniów"
+author: "Katarzyna Taras"
+date: "2025-09-25"
+output:
+    html_document:
+       css: style.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#required_packages <- c("tidyverse", "naniar", "mice", "ggplot2")
+#installed <- required_packages %in% rownames(installed.packages())
+#if (any(!installed)) {install.packages(required_packages[!installed], lib = "C:/Users/kasia/AppData/Local/R/win-library/4.5", repos = "https://cloud.r-project.org/" )}
+
+#install.packages("validate", repos = "https://cloud.r-project.org/")
+#install.packages("DT", repos = "https://cloud.r-project.org/")
+#install.packages("GGally", repos = "https://cloud.r-project.org/")
+#install.packages("FactoMineR", repos = "https://cloud.r-project.org/")
+#install.packages("factoextra", repos = "https://cloud.r-project.org/")
+library(tidyverse)
+library(naniar)
+library(mice)
+library(ggplot2)
+library(editrules)
+library(validate)
+library(dplyr)
+library(tidyr)
+library(GGally)
+library(FactoMineR)
+library(factoextra)
+library(ggpubr)
+library(glmnet)
+library(corrplot)
+```
+
+# 1 Wstęp
+
+Wyniki egzaminów szkolnych zależą od wielu różnych czynników, takich jak liczba godzin nauki, frekwencja na zajęciach, poziom motywacji ucznia, wsparcie ze strony rodziny oraz styl życia, obejmujący między innymi ilość snu i aktywność fizyczną. Zrozumienie, które z tych zmiennych mają największy wpływ na osiągane wyniki jest kluczowe dla skutecznego wspierania uczniów oraz optymalizacji procesu edukacyjnego.
+
+<span style="font-size:15pt;">__Cel projektu:__</span>
+
+Celem niniejszego projektu jest identyfikacja i ocena zmiennych, które w największym stopniu determinują wyniki egzaminacyjne.
+
+<span style="font-size:15pt;">__Metody analizy:__</span>
+
+W analizie wykorzystano metody wizualizacji danych, klasyczne metody statystyczne (test t-Studenta i analiza wariancji ANOVA), model regresji liniowej, technikę selekcji zmiennych Lasso oraz analizę głównych składowych (PCA), która pomogła zrozumieć wzajemne zależności między zmiennymi. Całość pozwoliła na kompleksowe badanie zależności i identyfikację najistotniejszych czynników wpływających na wyniki egzaminów.
+
+
+# 2 Przygotowanie danych
+
+Dane zostały wczytane do środowiska R i poddane wstępnej eksploracji. Przeprowadzono
+diagnozę braków danych oraz ich wizualizację z wykorzystaniem pakietu *naniar*.
+
+## 2.1 Wczytanie danych z pliku CSV
+
+```{r dane_csv}
+# Wczytanie danych z pliku CSV, z interpretacją "NA" jako brak danych.
+dane <- read.csv("C:/Users/kasia/Desktop/czynniki.csv", na.strings = c("NA", ""))
+```
+
+## 2.2 Opis danych
+
+Zbiór danych zawiera zarówno zmienne numeryczne, jak i zmienne kategoryczne. Każda z analizowanych zmiennych pełni określoną funkcję w kontekście analizy wyników uczniów, przy czym analizie poddano jedynie wybrane zmienne tj.:
+
+* __Zmienne numeryczne:__
+  * Exam_Score - wynik egzaminu końcowego (główna zmienna),
+  * Hours_Studied - liczba godzin nauki w tygodniu,
+  * Attendance - frekwencja na zajęciach,
+  * Previous_Scores - wyniki z poprzedniego egzaminu,
+  * Sleep_Hours - średnia liczba godzin snu w ciągu nocy,
+  * Tutoring_Sessions - liczba sesji korepetycji w miesiącu,
+  * Physical_Activity - średnia liczba godzin aktywności fizycznej w tygodniu;
+  
+* __Zmienne kategoryczne:__
+  * Parental_Involvement - poziom zaangażowania rodziców w edukację ucznia (Low, Medium, High),
+  * Motivation_Level - poziom motywacji ucznia (Low, Medium, High),
+  * Gender - płeć ucznia (Female, Male).
+
+
+## 2.3 Weryfikacja braków danych
+
+Poniższy kod sprawdza, ile jest braków w całym zbiorze danych.
+
+```{r NA_dane}
+sum(is.na(dane))
+```
+
+Aby w łatwy sposób zidentyfikować kolumny wymagające uzupełnienia zastosowano wizualizację braków danych.
+
+<span style="font-size:15pt;">__Wizualizacja występowania braków danych__</span>
+
+```{r spr_brakow}
+naniar::vis_miss(dane) +
+  theme(plot.margin = margin(r = 4, unit = "cm"))
+```
+
+Braki danych są nieliczne i rozproszone losowo, co pozwala na ich imputację bez istotnego ryzyka zniekształcenia wyników.
+
+## 2.4 Definiowanie reguł spójności
+
+Dodatkowo założono reguły sprawdzające sensowność wartości (np. zakres godzin nauki 0-50, frekwencja 0%-100%, dozwolone kategorie zmiennych jakościowych). Reguły zastosowano z wykorzystaniem pakietu *editrules*.
+
+```{r reguly_all}
+rules <- validator(
+  Hours_Studied >= 0 & Hours_Studied <= 50, # liczba godzin nauki w tygodniu 0-50
+  Attendance >= 0 & Attendance <= 100, # % odsetek zajęć, w których uczestniczył uczeń 0-100
+  Sleep_Hours >= 0 & Sleep_Hours <= 12, # średnia liczba godzin snu na dobę 0-12
+  Previous_Scores >= 0 & Previous_Scores <= 100, # wyniki z poprzedniego egzaminu 0-100
+  Tutoring_Sessions >= 0 & Tutoring_Sessions <= 10, # liczba korepetycji w miesiącu 0-10
+  Physical_Activity >= 0, # średnia liczba godzin aktywności fizycznej w tygodniu (powyżej 0)
+  Exam_Score >= 0 & Exam_Score <= 100, # wynik egzaminu końcowego 0-100
+  Parental_Involvement %in% c("Low", "Medium", "High"), # poziom zaagażowania rodziców
+  Access_to_Resources %in% c("Low", "Medium", "High"), # dostępność zasobów edukacyjnych
+  Extracurricular_Activities %in% c("Yes", "No"), # udział w zajęciach pozalekcyjnych
+  Motivation_Level %in% c("Low", "Medium", "High"), # poziom motywacji ucznia
+  Internet_Access %in% c("Yes", "No"), # dostępność do Internetu
+  Family_Income %in% c("Low", "Medium", "High"), # poziom dochodów rodziny
+  Teacher_Quality %in% c("Low", "Medium", "High"), # jakość nauczycieli
+  School_Type %in% c("Public", "Private"), # rodzaj szkoły ucznia
+  Peer_Influence %in% c("Positive", "Neutral", "Negative"), # wpływ rówieśników na wyniki
+  Learning_Disabilities %in% c("Yes", "No"), # obecność trudności w uczeniu się
+  Parental_Education_Level %in% c("Postgraduate", "College", "High School"), # najwyższy poziom wykształcenia rodziców
+  Distance_from_Home %in% c("Near", "Moderate", "Far"), # odległość od domu do szkoły
+  Gender %in% c("Male", "Female")) # płeć ucznia
+```
+
+
+<span style="font-size:15pt;">__Konfrontacja danych z regułami walidacji i wyświetlenie podsumowania błędów__</span>
+
+```{r podsumowanie}
+violations <- confront(dane, rules)
+summary(violations)
+```
+
+Weryfikacja potwierdza brak danych w 6 kolumnach (Sleep_Hours, Family_Income, Teacher_Quality, Parental_Education_Level, Distance_from_Home, Exam_Score) oraz wykazuje błąd reguły w ostatniej kolumnie (Exam_Score - 101 pkt, z zaznaczeniem, że maks. możliwy wynik to 100 pkt). 
+
+## 2.5 Czyszczenie danych i imputacja
+
+W poniższym kodzie dokonano korekty typów niektórych zmiennych (numeryczne i kategoryczne), poprawiono błędną wartość w kolumnie Exam_Score, a następnie za pomocą pakietu *mice* przeprowadzono imputację brakujących danych z użyciem odpowiednich metod dla różnych typów zmiennych.
+
+```{r imp}
+dane$Sleep_Hours <- as.numeric(dane$Sleep_Hours)
+dane$Exam_Score <- as.numeric(dane$Exam_Score)
+dane$Family_Income <- as.factor(dane$Family_Income)
+dane$Teacher_Quality <- as.factor(dane$Teacher_Quality)
+dane$Parental_Education_Level <- as.factor(dane$Parental_Education_Level)
+dane$Distance_from_Home <- as.factor(dane$Distance_from_Home)
+
+dane$Exam_Score[dane$Exam_Score > 100] <- 100 # poprawienie błędnej wartości w Exam_Score (101 na 100)
+
+meth <- make.method(dane)
+meth["Sleep_Hours"] <- "pmm"   # pmm dla wartości numerycznych
+meth["Exam_Score"] <- "pmm"
+meth["Family_Income"] <- "polyreg"  # polyreg dla zmiennych kategorycznych
+meth["Teacher_Quality"] <- "polyreg"
+meth["Parental_Education_Level"] <- "polyreg"
+meth["Distance_from_Home"] <- "polyreg"
+
+# Macierz predyktorów (które kolumny mają wpływ na imputację).
+pred <- make.predictorMatrix(dane)
+pred[,] <- 1                        # domyślnie wszystkie kolumny jako predyktory
+pred["Exam_Score",] <- 0            # wyłączenie dla Exam_Score
+pred["Exam_Score", c("Parental_Education_Level", "Teacher_Quality")] <- 1  # zależność tylko od tych kolumn
+
+# Imputacja.
+imp <- mice(dane, m = 1, maxit = 5, method = meth, predictorMatrix = pred, seed = 123, printFlag = FALSE) 
+```
+
+Na koniec ograniczono zakres imputowanych wartości numerycznych do logicznych granic. Dane po imputacji zostały przypisane z powrotem do oryginalnego obiektu.
+
+```{r final}
+dane_complete <- complete(imp, 1)
+
+dane_complete$Sleep_Hours <- pmin(pmax(dane_complete$Sleep_Hours, 0), 12)
+dane_complete$Exam_Score <- pmin(pmax(dane_complete$Exam_Score, 0), 100)
+
+dane <- dane_complete
+```
+
+## 2.6 Weryfikacja braków danych po imputacji
+
+```{r spr_imp}
+sum(is.na(dane))   
+```
+
+Weryfikacja potwierdza gotowość danych do analizy.
+
+<span style="font-size:15pt;">__Wizualizacja występowania braków danych po imputacji__</span>
+
+```{r spr_brakow_po_imp}
+naniar::vis_miss(dane) +
+  theme(plot.margin = margin(r = 4, unit = "cm"))
+```
+
+# 3 Wizualizacje analizowanych zmiennych
+
+## 3.1 Histogram rozkładu wyników egzaminu 
+
+Histogram rozkładu wyników egzaminu pokazuje, jak wyniki rozkładają się w populacji uczniów.
+
+```{r histogram_results_exam}
+ggplot(dane, aes(x=Exam_Score)) + 
+  geom_histogram(binwidth=2.5,boundary = 0, fill="steelblue", color="black") +
+  scale_x_continuous(breaks = seq(min(0), max(100), by = 5)) +
+  scale_y_continuous(breaks = seq(min(0), max(7000), by = 250)) +
+  labs(title="Histogram wyników egzaminu", x="Wynik egzaminu", y="Liczba uczniów")
+```
+
+Większość wyników mieści się w przedziale około 60-75 pkt, z wyraźnym skupieniem wokół wartości około 65-70 pkt, co wskazuje, że większość uczniów osiąga wyniki w tym zakresie. Rozkład jest asymetryczny, z długim ogonem po prawej stronie sięgającym do wartości około 100 pkt, co oznacza, że jest niewiele uczniów o bardzo wysokich wynikach. Natomiast wartości poniżej 55 pkt są nieobecne w zbiorze.
+
+## 3.2 Wykres słupkowy rozkładu płci i średnie wyniki egzaminu
+
+Poniższy wykres pokazuje, czy płeć ma związek ze średnią punktacją.
+
+```{r rozklad_plci}
+dane %>%
+  group_by(Gender) %>%
+  summarise(mean_score = mean(Exam_Score, na.rm = TRUE)) %>%
+  ggplot(aes(x = Gender, y = mean_score, fill = Gender)) +
+  scale_y_continuous(breaks = seq(min(0), max(100), by = 10)) +
+  geom_col() +
+  labs(title = "Średni wynik egzaminu według płci", x = "Płeć", y = "Średnia punktacja")
+
+```
+
+Średnia punktacja dla kobiet (Female) i mężczyzn (Male) jest bardzo zbliżona – oba słupki osiągają niemal tę samą wysokość, w okolicach 67 pkt, co sugeruje, że różnice pomiędzy płciami są minimalne i raczej nie wskazują na istotny wpływ płci na wynik egzaminu.
+
+## 3.3 Boxplot wyników według poziomu motywacji
+
+Poniżej przedstawiono boxplot wyników egzaminów w podziale na poziom motywacji. Wybrano go, ponieważ pokazuje medianę, kwartyle oraz długość wąsów, a także średnie i wartości odstające.
+
+```{r boxplot}
+ggboxplot(dane, x = "Motivation_Level", y = "Exam_Score",
+          color = "Motivation_Level",
+          add = "jitter") +
+
+  stat_summary(fun = median, geom = "point", shape = 23, size = 4,
+               aes(fill = "Mediana"), color = "black") +
+  stat_summary(fun = median, geom = "text",
+               aes(label = round(after_stat(y),1)), 
+               vjust = -1.2, size = 3, color = "red") +
+
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 3,
+              aes(fill = "Średnia"), color = "black") +
+  stat_summary(fun = mean, geom = "text",
+              aes(label = round(after_stat(y),1)), 
+              vjust = 1.5, size = 3, color = "blue") +
+
+  scale_fill_manual(name = "Statystyki",
+              values = c("Mediana" = "red", "Średnia" = "blue")) +
+  scale_color_manual(name = "Poziom motywacji",
+              values = c("Low" = "grey80", "Medium" = "grey65", "High" = "grey50")) +
+
+  labs(title = "Wyniki egzaminów według poziomu motywacji",
+       x = "Poziom motywacji",
+       y = "Wynik egzaminu")
+```
+
+Wykres pokazuje, że średnie wyniki egzaminów rosną nieznacznie wraz z poziomem motywacji, natomiast mediana pozostaje taka sama we wszystkich grupach. Oznacza to, że kilka wysokich wyników w grupach bardziej zmotywowanych podnosi średnią. Boxplot dobrze pokazuje rozrzut wyników, kwartyle, długość wąsów i wartości odstające, co ułatwia wizualną ocenę rozkładu danych. Jednak aby dokładniej ocenić, czy różnice między poziomami motowyacji są statystycznie istotne, warto przeprowadzić testy tj. ANOVA oraz test post-hoc (np. Tukey HSD).
+
+## 3.4 Heatmapa korelacji między zmiennymi numerycznymi
+
+Poniżej przedstawiono wizualizację korelacji między zmiennymi numerycznymi. Interpretacja skupi się głównie na zależnościach pozostałych zmiennych względem głównej zmiennej Exam_Score.
+
+```{r heatmapa}
+num_vars <- dane %>% select(where(is.numeric))
+corrplot(cor(num_vars, use = "complete.obs"), method = "color", addCoef.col = "black")
+```
+
+Heatmapa pokazuje, że najsilniejszy dodatni związek z wynikiem z egzaminu mają frekwencja (r = 0.56) i liczba godzin nauki (r = 0.42), co sugeruje, że regularne uczestnictwo w zajęciach i intensywna nauka istotnie wpływają na wyniki. Wyniki z poprzedniego egzaminu (r = 0.17) oraz liczba sesji korepetycji (r = 0.15) wykazują słabszą, ale dodatnią korelację. Średnia liczba godzin snu (r = -0.02) i aktywność fizyczna (r = 0.03) są praktycznie nieskorelowane. Frekwencję i godziny nauki można poddać dalszej, bardziej szczegółowej analizie w celu oceny ich wpływu na wyniki z egzaminu.
+
+## 3.5 Wykresy rozrzutu
+
+* <span style="font-size:15pt;">__Godziny nauki vs wynik z egzaminu__</span>
+
+Pozwala zobaczyć związek między czasem nauki a wynikiem z egzaminu, z naniesioną linią regresji.
+
+```{r rozrzut_1}
+ggplot(dane, aes(x=Hours_Studied, y=Exam_Score)) +
+geom_point(alpha=0.6) +
+geom_smooth(method="lm", color="red") +
+labs(title="Zależność między godz. nauki a wynikiem z egzaminu",
+x="Godziny nauki w tygodniu", y="Wynik z egzaminu")
+```
+
+Widać dodatnią korelację między liczbą godzin nauki a wynikiem z egzaminu - więcej nauki zwykle oznacza wyższe wyniki. Czerwona linia regresji podkreśla ten trend, a rozrzut punktów pokazuje, że inne czynniki też wpływają na wynik, co należy uwzględnić w dalszej analizie. Zakres godzin nauki wynosi od kilku do ok. 40 tygodniowo, a wyniki od 60 do 100 punktów.
+
+* <span style="font-size:15pt;">__frekwencja vs wynik z egzaminu__</span>
+
+Pozwala zobaczyć związek między frekwencją a wynikiem.
+
+```{r rozrzut_2}
+ggplot(dane, aes(x=Attendance, y=Exam_Score)) +
+geom_point(alpha=0.6) +
+geom_smooth(method="lm", color="red") +
+labs(title="Zależność między frekwencją a wynikiem z egzaminu",
+x="Frekwencja", y="Wynik z egzaminu")
+```
+
+Wykres pokazuje dodatnią korelację między frekwencją a wynikiem z egzaminu - im wyższa frekwencja, tym wyższy wynik egzaminu. Czerwona linia regresji podkreśla ten trend. Jednocześnie rozrzut punktów wskazuje, że na wynik egzaminu wpływają również inne czynniki poza samą frekwencją, co daje podobny rezultat jak w przypadku zależności godzin nauki do wyników z egzaminu.
+
+
+## 3.6 Faceting: godziny nauki x motywacja
+
+Poniżej przedstawiono rozkład wyników egzaminów wg godzin nauki i poziomu motywacji.
+
+```{r faceting}
+ggplot(dane, aes(x = Hours_Studied, y = Exam_Score)) +
+geom_point(alpha = 0.3) +
+geom_smooth(method = "lm", se = FALSE, color = "blue") +
+facet_wrap(~ Motivation_Level) +
+labs(title = "Godziny nauki a wyniki egzaminów w zależności od motywacji")
+```
+
+We wszystkich grupach motywacji więcej godzin nauki wiąże się z wyższymi wynikami egzaminów (pozytywna korelacja, niebieska linia trendu).
+
+* Wysoka motywacja: najwyższe wyniki przy danej liczbie godzin.
+
+* Średnia motywacja: wyniki pośrednie.
+
+* Niska motywacja: najniższe wyniki, nawet przy podobnej liczbie godzin.
+
+Rozrzut danych sugeruje wpływ również innych czynników na wyniki uczniów. Podobne nachylenie linii trendu wskazuje, że wzrost godzin nauki działa podobnie we wszystkich grupach – różnica dotyczy głównie ogólnego poziomu wyników.
+
+Podsumowując, zarówno liczba godzin nauki, jak i poziom motywacji są pozytywnie skorelowane z wynikami egzaminów. Wysoka motywacja i więcej godzin nauki sprzyjają lepszym wynikom. Chodź rozkład wyników jednoznacznie pokazuje również wpływ innych czynników.
+
+# 4 Analiza opisowa
+
+## 4.1 Podstawowe statystyki opisowe
+
+```{r stats}
+num_vars <- dane %>% select(where(is.numeric))
+summary_stats <- num_vars %>%
+  summarise(across(
+    everything(), list(
+      min = ~min(.x, na.rm = TRUE),
+      q25 = ~quantile(.x, 0.25, na.rm = TRUE),
+      median = ~median(.x, na.rm = TRUE),
+      mean = ~mean(.x, na.rm = TRUE),
+      q75 = ~quantile(.x, 0.75, na.rm = TRUE),
+      max = ~max(.x, na.rm = TRUE),
+      sd = ~sd(.x, na.rm = TRUE))
+    ))
+
+summary_stats_long <- summary_stats %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("variable", "statistic"),
+    names_pattern = "(.+)_(.+)") %>%
+  pivot_wider(
+    names_from = statistic,
+    values_from = value)
+
+summary_stats_formatted <- summary_stats_long %>%
+  mutate(across(c(mean, sd), ~ format(., nsmall = 4)))
+
+print(summary_stats_formatted)
+```
+
+Przedstawiona tabela zawiera szczegółowe miary statystyczne opisujące charakterystykę siedmiu zmiennych liczbowych. Dla każdej zmiennej określono minimalną i maksymalną wartość obserwacji, kwantyle pierwszego i trzeciego rzędu, medianę oraz średnią, a także odchylenie standardowe opisujące rozproszenie danych.
+
+<span style="font-size:15pt;">__Wizualizacja średnich i odchyleń standardowych zmiennych numerycznych__</span>
+
+Wykres ilustruje porównanie średnich wartości poszczególnych zmiennych wraz z ich odchyleniem standardowym, pokazanym jako pionowe paski błędów.
+
+```{r stats_wykres}
+ggplot(summary_stats_long, aes(x = reorder(variable, mean), y = mean)) +
+  geom_col(fill = "steelblue") +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.2, color = "orange") +
+  coord_flip() +
+  labs(title = "Średnia wartość i odchylenie standardowe zmiennych",
+       x = "Zmienna", y = "Średnia")
+
+```
+
+Podsumowując, uczniowie uczą się średnio ok. 20 godzin tygodniowo, średnia frekwencja na zajęciach wynosi ok. 80%, śpią średnio ok. 7 godzin i osiągają spójne wyniki egzaminacyjne (średnia - 67 punktów, SD ≈ 3.8). Różnice w godzinach nauki, wcześniejszych wynikach z egzaminu czy liczbie godzin korepetycji mogą być kluczowe przy modelowaniu sukcesu egzaminacyjnego.
+
+## 4.2 Test t-Studenta (płeć a wynik z egzaminu)
+
+Test t-Studenta oceniający czy istnieją różnice w wynikach egzaminu między płciami.
+
+```{r t_student}
+t.test(Exam_Score ~ Gender, data=dane)
+```
+
+Hipotezy:
+
+$H_0$ - Średnie wyniki z egzaminu są takie same zarówno w przypadku kobiet, jak i mężczyzn.
+
+$H_1$ - Średnie wyniki różnią się między płciami.
+
+Średnie wyniki dla kobiet i mężczyzn są praktycznie identyczne (67.17 vs 67.19). Wartość statystyki testowej t = -0.217, co wskazuje na brak istotnych różnic. P-value = 0.8282, czyli zdecydowanie powyżej typowego poziomu istotności (α = 0.05).
+
+Wniosek: Nie ma podstaw do odrzucenia hipotezy zerowej $H_0$. Brak jest podstaw, aby stwierdzić, że płeć wpływa na osiągane wyniki.
+
+## 4.3 Test analizy wariancji ANOVA (motywacja a wynik z egzaminu)
+
+Test ANOVA pozwala ocenić, czy poziom motywacji różnicuje wyniki z egzaminu.
+
+```{r anova}
+anova_res <- aov(Exam_Score ~ Motivation_Level, data=dane)
+summary(anova_res)
+```
+
+Hipotezy:
+
+$H_0$ - Średnie wyniki z egzaminu są takie same dla wszystkich poziomów motywacji.
+
+$H_1$ - Przynajmniej jeden poziom motywacji różni się istotnie pod względem średniego wyniku z egzaminu.
+
+P-value jest ekstremalnie niskie (p-value = 3.72e-10, p < 0.001), F(2,6604) = 21.79 co oznacza, że poziom motywacji istotnie różnicuje średnie wyniki egzaminu. Oznacza to, że uczniowie o różnych poziomach motywacji osiągają istotnie różne wyniki.
+
+Wniosek: Odrzucamy hipotezę zerową $H_0$, poziomy motywacji różnią się istotnie.
+
+## 4.4 Test post-hoc Tukey HSD
+
+Test post-hoc do testu ANOVA pozwala ustalić, które dokładnie grupy różnią się od siebie.
+
+```{r tukey}
+tukey_res <- TukeyHSD(anova_res)
+print(tukey_res)
+```
+
+Test Tukey HSD wykazał istotne różnice w wynikach z egzaminów między wszystkimi poziomami motywacji:
+
+* Różnica średnich __(diff)__ pokazuje, o ile punktów różnią się grupy - uczniowie o wysokiej motywacji osiągają średnio wyższe wyniki niż uczniowie ze średnią (-0.41) i niską motywacją (-0.885), a osoby ze średnią motywacją radzą sobie lepiej niż uczniowie o niskiej motywacji (0.475). 
+
+* Przedziały ufności __(lwr–upr)__ nie obejmują 0, co wskazuje, że te różnice są istotne statystycznie.
+
+* Skorygowane wartości p __(p adj)__ są mniejsze niż 0.05, co dodatkowo potwierdza istotność. 
+
+Wyniki pokazują wyraźny, stopniowy, pozytywny wpływ motywacji na osiągnięcia edukacyjne: im wyższa motywacja, tym lepsze wyniki egzaminów.
+
+
+## 4.5 Model regresji liniowej
+
+Model regresji liniowej przewiduje wynik egzaminu na podstawie godzin nauki, frekwencji i zaangażowania rodziów. Należy zaznaczyć, że poziom zaagażowania rodziców nie był wcześniej analizowany.
+
+```{r regresja}
+model <- lm(Exam_Score ~ Hours_Studied + Attendance + Parental_Involvement, data=dane)
+summary(model)
+```
+
+Model wyjaśnia 52% zmienności wyników egzaminu (R² = 0.518). Każda dodatkowa godzina nauki podnosi wynik średnio o 0.28 pkt, a wzrost frekwencji o 1% zwiększa wynik o 0.19 punktów. Niskie i średnie zaangażowanie rodziców obniża wyniki odpowiednio o 1.74 i 0.89 pkt. Wszystkie zmienne są istotne statystycznie.
+
+Wniosek: Wyniki wskazują, że zarówno indywidualne wysiłki uczniów - czas poświęcony na naukę, frekwencja na zajeciach, jak i czynniki środowiskowe - zaangażowanie rodziców, mają istotny wpływ na wyniki uczniów.
+
+## 4.6 Model Lasso
+
+Model Lasso jest alternatywą do zwykłej regresji liniowej, wskazuje, które zmienne mają rzeczywisty wpływ na wynik i ich względną siłę, upraszczając model i eliminując wpływ mniej istotnych czynników. 
+
+```{r lasso}
+
+X <- model.matrix(Exam_Score ~ Hours_Studied + Attendance + Parental_Involvement,
+data=dane)[,-1]
+y <- dane$Exam_Score
+
+cv.lasso <- cv.glmnet(X, y, alpha=1) # Lasso
+coef(cv.lasso, s = "lambda.min")
+```
+
+Punkt startowy modelu wynosi około 47.6 pkt, co oznacza bazowy wynik egzaminu bez uwzględnienia innych czynników. Każda dodatkowa godzina nauki podnosi wynik średnio o 0.27 pkt, a poprawa frekwencji zwiększa wynik o 0.19 pkt. Natomiast niższe poziomy zaangażowania rodziców ("Low" i "Medium") obniżają wynik odpowiednio o 1.70 i 0.86 pkt. względem wysokiego poziomu zaangażowania.
+
+## 4.7 Analiza czynnikowa PCA
+
+Dla uzupełnienia analizy przeprowadzono krótką analizę głównych składowych (PCA). Nie wnosi ona nowych wniosków do raportu – jej celem jest jedynie pokazanie, że zmienne numeryczne można pogrupować w ukryte czynniki, co stanowi opcjonalny krok eksploracyjny przed szczegółową analizą poszczególnych zmiennych.
+
+```{r PCA}
+# Wybór zmiennych numerycznych i przygotowanie danych
+num_vars <- dane %>% select(where(is.numeric))
+num_vars_complete <- na.omit(num_vars)
+pca_res <- PCA(num_vars_complete, scale.unit = TRUE, graph = FALSE) # standaryzacja danych, mean = 0, sd = 1
+
+# Scree plot – ile wariancji wyjaśniają składowe
+fviz_eig(pca_res, addlabels = TRUE, ylim = c(0, 50)) +
+    ggtitle("Scree plot - udział wariancji wyjaśnianej przez kolejne komponenty")
+  
+```
+
+Na podstawie wykresu własnych wartości (scree plot) widać, że pierwsze 4 komponenty główne mają wartości własne większe od 1 i razem wyjaśniają ok. 69% całkowitej wariancji.
+
+
+__Mapy zmiennych wyjaśnianych przez 4 główne komponenty__
+
+Poniższe mapy zmiennych wizualizują, które zmienne grupują się razem.
+
+```{r pc1_pc2}
+fviz_pca_var(pca_res, axes = c(1,2),
+             col.var = "contrib",
+             gradient.cols = c("blue", "white", "red"),
+             repel = TRUE) +
+    ggtitle("PC1 vs PC2")
+```
+
+* __PC1__ (24,7% wariancji) - Exam_Score, Hours_Studied, Attendance, w mniejszym stopniu Previous_Score i Tutoring_Sessions.
+
+* __PC2__ (15% wariancji) – Hours_Studied, Previous_Scores, Sleep_Hours.
+
+Na analizę obu składowych (PC1 i PC2) największy wpływ mają czynniki: Exam_Score, Attendance i Hours_Studied.
+
+```{r pc3_pc4}
+fviz_pca_var(pca_res, axes = c(3,4),
+             col.var = "contrib",
+             gradient.cols = c("blue", "white", "red"),
+             repel = TRUE) +
+      ggtitle("PC3 vs PC4")
+```
+
+* __PC3__ (14,6% wariancji) – Physical_Activity, Tutoring_Sessions, w mniejszym stopniu Hours_Studied.
+
+* __PC4__ (14,5% wariancji) – Sleep_Hours, Physical_Activity, w mniejszym stopniu Hours_Studied i Attendance.
+
+Na analizę obu składowych (PC3 i PC4) największy wpływ mają czynniki: Physical_Activity, Sleep_Hours.
+
+Podsumowując, PC1 skupia głównie zmienne związane z wynikami egzaminu i frekwencją, PC2 – z nauką i snem, PC3 - z aktywnością fizyczną i nauką, a PC4 – z aktywnością fizyczną i snem. Analiza ta nie zmienia wniosków o wpływie zmiennych na wyniki egzaminu, ale pozwala lepiej zrozumieć ich wzajemne zależności.
+
+# 5 Podsumowanie
+
+Przeprowadzona analiza pozwoliła zidentyfikować kluczowe czynniki wpływające na wyniki uczniów w egzaminach. Dane poddano wstępnemu oczyszczeniu i imputacji braków, następnie dokonano wizualizacji zmiennych oraz analiz statystycznych, w tym testów t-Studenta, ANOVA, regresji liniowej, modelu Lasso. Dodatkowo przeprowadzono również analizę głównych składowych (PCA) dla zmiennych numerycznych jako krok eksploracyjny, bez wprowadzania nowych wniosków dotyczących wpływu na wyniki egzaminu.
+
+__Kluczowe wnioski z analizy zmiennych:__
+
+* __Liczba godzin nauki i frekwencja:__ Obie zmienne wykazują silną, dodatnią korelację z wynikami egzaminu. Regularne uczestnictwo w zajęciach i większa liczba godzin nauki znacząco poprawiają wyniki uczniów.
+
+* __Poziom motywacji:__ Wyższy poziom motywacji wiąże się z wyższymi średnimi wynikami egzaminów, co potwierdzają zarówno test ANOVA, jak i wizualizacje rozrzutu w podziale na grupy motywacyjne.
+
+* __Zaangażowanie rodziców:__ Wysokie zaangażowanie rodziców sprzyja lepszym wynikom uczniów; brak lub średni poziom zaangażowania wiąże się z niewielkim spadkiem wyników.
+
+* __Pozostałe czynniki:__ Wyniki z poprzednich egzaminów, liczba sesji korepetycji oraz cechy stylu życia (sen, aktywność fizyczna) wykazują niewielki lub znikomy wpływ na końcowy wynik egzaminu. Płeć ucznia nie ma istotnego znaczenia.
+
+W oparciu o analizę można śmiało stwierdzić, że warto wzmacniać zarówno indywidualną pracę uczniów, poprzez zwiększenie liczby godzin nauki i regularność obecności na zajęciach, jak i wsparcie ze strony rodziny, np. większe zaangażowanie rodziców w proces edukacyjny. Szczególnie warto koncentrować się na motywacji uczniów, ponieważ jest ona istotnym czynnikiem różnicującym wyniki egzaminacyjne.
+
+
+## Zał. 1 Interaktywna tabela zawierająca oczyszczone dane z pliku CSV
+
+```{r tab, message=FALSE}
+library(DT)
+datatable(dane, 
+          options = list(pageLength = 10,   # liczba wierszy na stronę
+                         scrollX = TRUE),   # poziomy scroll
+          filter = 'top')                   # filtr kolumn na górze
+```
+
