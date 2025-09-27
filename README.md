@@ -11,7 +11,7 @@ Projekt w R Markdown bada zależności między różnymi czynnikami a wynikami u
 
 ## Podgląd raportu HTML
 
-> Plik HTML ma za duży rozmiar (~2,25 MB), więc GitHub może go nie wyświetlić bezpośrednio w podglądzie. Aby wyświetlić raport należy pobrać plik na ysk lokalny i otworzyć w przeglądarce.
+> Plik HTML ma za duży rozmiar, więc GitHub może go nie wyświetlić bezpośrednio w podglądzie. Aby wyświetlić raport należy pobrać plik na ysk lokalny i otworzyć w przeglądarce.
 
 ## Jak uruchomić lokalnie
 
